@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tg-qbit-bot"
+version = "0.1.0"
+description = "Telegram bot that forwards torrent files and magnet links to qBittorrent Web UI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "tg-qbit-bot contributors" }
+]
+keywords = ["telegram", "qbittorrent", "torrent", "seedbox", "bot"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Internet",
+]
+dependencies = [
+  "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.4",
+]
+
+[project.scripts]
+tg-qbit-bot = "tg_qbit_bot.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

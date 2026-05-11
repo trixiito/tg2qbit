@@ -1,0 +1,13 @@
+[Unit]
+Description=Telegram to qBittorrent bot
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tg-qbit-bot --config %h/.config/tg-qbit-bot/config.env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
