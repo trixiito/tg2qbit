@@ -12,7 +12,7 @@ It is a small native Python CLI. No Docker required.
 - Adds torrents through qBittorrent Web API
 - Supports qBittorrent category, tags, save path, and paused mode
 - Sends progress updates after new torrents are added
-- Shows active torrents with `/status`
+- Shows a live auto-refreshing dashboard with `/status`
 - Pauses/resumes torrents by fuzzy-matched name
 - Sends disk usage alerts at configurable thresholds
 - Sends ratio alerts when torrents hit your target ratio
@@ -64,7 +64,7 @@ Send `/start` to the bot. If your Telegram ID is not allowlisted yet, the bot wi
 
 ## Bot Usage
 
-Send a `.torrent` file directly to the bot, or send a magnet link as plain text.
+Send a `.torrent` file directly to the bot, or send a magnet link as plain text. New torrents get a live progress card that edits in place instead of spamming the chat.
 
 Commands:
 
@@ -74,6 +74,8 @@ Commands:
 /resume breaking bad
 /add tv magnet:?xt=urn:btih:...
 ```
+
+`/status` sends a clean live dashboard, then refreshes the same Telegram message for the configured live window.
 
 For category routing with torrent files, add a Telegram caption:
 
@@ -123,6 +125,9 @@ If your host stops user services after logout, enable lingering for your account
 | `PROGRESS_UPDATE_INTERVAL_SECONDS` | no | `180` | How often to DM progress for newly added torrents |
 | `PROGRESS_UPDATE_MAX_HOURS` | no | `24` | Stop progress tracking after this many hours |
 | `STATUS_LIMIT` | no | `15` | Max torrents shown by `/status` |
+| `STATUS_LIVE_ENABLED` | no | `true` | Edit `/status` in place as a live dashboard |
+| `STATUS_REFRESH_SECONDS` | no | `30` | Live dashboard refresh interval |
+| `STATUS_LIVE_DURATION_SECONDS` | no | `600` | How long each live dashboard keeps refreshing |
 | `FUZZY_MATCH_MIN_SCORE` | no | `0.35` | Minimum name-match score for `/pause` and `/resume` |
 | `FUZZY_MATCH_LIMIT` | no | `5` | Max fuzzy matches to pause/resume |
 | `DISK_WATCH_ENABLED` | no | `true` | Enable disk space alerts |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import logging
 import os
@@ -47,6 +48,9 @@ class Config:
     ratio_alert_target: float | None
     ratio_alert_interval_seconds: int
     status_limit: int
+    status_live_enabled: bool
+    status_refresh_seconds: int
+    status_live_duration_seconds: int
     fuzzy_match_min_score: float
     fuzzy_match_limit: int
     category_save_paths: dict[str, str]
@@ -235,6 +239,9 @@ def load_config() -> Config:
         ratio_alert_target=parse_float_env("RATIO_ALERT_TARGET", 1.0),
         ratio_alert_interval_seconds=parse_int_env("RATIO_ALERT_INTERVAL_SECONDS", 300),
         status_limit=parse_int_env("STATUS_LIMIT", 15),
+        status_live_enabled=parse_bool(os.getenv("STATUS_LIVE_ENABLED"), default=True),
+        status_refresh_seconds=parse_int_env("STATUS_REFRESH_SECONDS", 30),
+        status_live_duration_seconds=parse_int_env("STATUS_LIVE_DURATION_SECONDS", 600),
         fuzzy_match_min_score=parse_float_env("FUZZY_MATCH_MIN_SCORE", 0.35) or 0.35,
         fuzzy_match_limit=parse_int_env("FUZZY_MATCH_LIMIT", 5),
         category_save_paths=parse_mapping(os.getenv("CATEGORY_SAVE_PATHS")),
@@ -258,15 +265,67 @@ class TelegramClient:
             raise BotError(f"Telegram {method} failed: {payload}")
         return payload["result"]
 
-    def reply(self, chat_id: int, text: str) -> None:
+    def reply(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+    ) -> dict[str, Any] | None:
         try:
-            self.call("sendMessage", json={"chat_id": chat_id, "text": text})
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+                payload["disable_web_page_preview"] = True
+            return self.call("sendMessage", json=payload)
         except Exception:
             LOGGER.exception("Could not send Telegram reply")
+            return None
 
-    def notify_allowed_users(self, user_ids: set[int], text: str) -> None:
+    def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+                payload["disable_web_page_preview"] = True
+            return self.call("editMessageText", json=payload)
+        except Exception:
+            LOGGER.exception("Could not edit Telegram message")
+            return None
+
+    def set_commands(self) -> None:
+        commands = [
+            {"command": "status", "description": "Live seedbox dashboard"},
+            {"command": "pause", "description": "Pause torrents by name"},
+            {"command": "resume", "description": "Resume torrents by name"},
+            {"command": "add", "description": "Add magnet with category"},
+            {"command": "help", "description": "Show bot commands"},
+        ]
+        try:
+            self.call("setMyCommands", json={"commands": commands})
+        except Exception:
+            LOGGER.exception("Could not set Telegram command menu")
+
+    def notify_allowed_users(
+        self,
+        user_ids: set[int],
+        text: str,
+        *,
+        parse_mode: str | None = None,
+    ) -> None:
         for user_id in user_ids:
-            self.reply(user_id, text)
+            self.reply(user_id, text, parse_mode=parse_mode)
 
     def download_file(self, file_id: str, output_path: Path) -> None:
         file_info = self.call("getFile", json={"file_id": file_id})
@@ -488,6 +547,17 @@ class TrackedTorrent:
     name: str
     added_at: float
     last_sent_at: float = 0
+    message_id: int | None = None
+    last_text: str = ""
+
+
+@dataclass
+class LiveStatusPanel:
+    chat_id: int
+    message_id: int
+    created_at: float
+    last_sent_at: float = 0
+    last_text: str = ""
 
 
 def read_json_file(path: Path, default: Any) -> Any:
@@ -555,6 +625,126 @@ def format_ratio(value: int | float | None) -> str:
     if value is None:
         return "0.00"
     return f"{float(value):.2f}"
+
+
+def escape_html(value: Any) -> str:
+    return html.escape(str(value), quote=False)
+
+
+def truncate_text(value: Any, limit: int) -> str:
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1]}..."
+
+
+def progress_bar(value: int | float | None, width: int = 18) -> str:
+    progress = max(0.0, min(1.0, float(value or 0)))
+    filled = round(progress * width)
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def disk_bar(used_percent: float, width: int = 18) -> str:
+    used = max(0.0, min(100.0, used_percent))
+    filled = round(used / 100 * width)
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def fit_telegram_text(text: str, limit: int = 3900) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 32].rstrip() + "\n\n<pre>...trimmed</pre>"
+
+
+def render_torrent_block(torrent: dict[str, Any], index: int | None = None) -> str:
+    prefix = f"{index:02d}. " if index is not None else ""
+    name = escape_html(truncate_text(torrent.get("name") or "Unnamed torrent", 72))
+    progress = torrent.get("progress")
+    state = escape_html(torrent.get("state") or "unknown")
+    eta = escape_html(format_eta(torrent.get("eta")))
+    lines = [
+        f"<b>{prefix}{name}</b>",
+        "<pre>"
+        f"{progress_bar(progress)} {format_percent(progress)}\n"
+        f"DOWN {format_speed(torrent.get('dlspeed')):<14} "
+        f"UP {format_speed(torrent.get('upspeed')):<14}\n"
+        f"ETA  {eta:<14} "
+        f"RATIO {format_ratio(torrent.get('ratio')):<6} {state}"
+        "</pre>",
+    ]
+    return "\n".join(lines)
+
+
+def render_torrent_card(
+    torrent: dict[str, Any],
+    *,
+    title: str,
+    footer: str | None = None,
+) -> str:
+    body = [
+        f"<b>{escape_html(title)}</b>",
+        render_torrent_block(torrent),
+    ]
+    if footer:
+        body.append(f"<pre>{escape_html(footer)}</pre>")
+    return fit_telegram_text("\n".join(body))
+
+
+def render_disk_panel(path: Path) -> str:
+    try:
+        usage = shutil.disk_usage(path)
+    except FileNotFoundError:
+        return f"DISK {escape_html(path)} unavailable"
+    used_percent = usage.used / usage.total * 100
+    return (
+        f"DISK {escape_html(path)} {used_percent:5.1f}% {disk_bar(used_percent)}\n"
+        f"FREE {format_bytes(usage.free)} / {format_bytes(usage.total)}"
+    )
+
+
+def render_status_dashboard(
+    torrents: list[dict[str, Any]],
+    *,
+    config: Config,
+    live_until: float | None = None,
+) -> str:
+    active_torrents = [torrent for torrent in torrents if is_active_torrent(torrent)]
+    total_down = sum(int(torrent.get("dlspeed") or 0) for torrent in torrents)
+    total_up = sum(int(torrent.get("upspeed") or 0) for torrent in torrents)
+    completed = sum(1 for torrent in torrents if float(torrent.get("progress") or 0) >= 1)
+    header = [
+        "<b>TG2QBIT // LIVE DASHBOARD</b>",
+        "<pre>"
+        f"ACTIVE {len(active_torrents):02d}  TOTAL {len(torrents):02d}  DONE {completed:02d}\n"
+        f"DOWN   {format_speed(total_down):<14} UP {format_speed(total_up):<14}\n"
+        f"{render_disk_panel(config.disk_watch_path)}"
+        "</pre>",
+    ]
+
+    if live_until:
+        remaining = max(0, int(live_until - time.time()))
+        remaining_text = escape_html(format_eta(remaining))
+        header.append(
+            f"<pre>REFRESH {config.status_refresh_seconds}s | LIVE {remaining_text}</pre>"
+        )
+
+    if not active_torrents:
+        header.append("<pre>No active torrents right now.</pre>")
+        return "\n".join(header)
+
+    shown_count = 0
+    for index, torrent in enumerate(active_torrents[: config.status_limit], start=1):
+        candidate = "\n\n".join([*header, render_torrent_block(torrent, index)])
+        if len(candidate) > 3800:
+            break
+        header.append(render_torrent_block(torrent, index))
+        shown_count += 1
+
+    hidden_count = len(active_torrents) - shown_count
+    if hidden_count > 0:
+        header.append(f"<pre>+ {hidden_count} more active torrent(s)</pre>")
+
+    return fit_telegram_text("\n\n".join(header))
 
 
 def torrent_line(torrent: dict[str, Any]) -> str:
@@ -649,17 +839,22 @@ def fuzzy_score(query: str, candidate: str) -> float:
 def help_text() -> str:
     return "\n".join(
         [
-            "Send a .torrent file or magnet link to add it to qBittorrent.",
+            "<b>TG2QBIT // CONTROL DECK</b>",
+            "<pre>Send a .torrent file or magnet link.</pre>",
             "",
-            "Commands:",
+            "<b>Commands</b>",
+            "<pre>",
             "/status - show active torrents",
             "/pause name - fuzzy-match and pause torrents",
             "/resume name - fuzzy-match and resume torrents",
             "/add category magnet-link - add a magnet under a category",
+            "</pre>",
             "",
-            "Torrent file captions:",
+            "<b>Torrent file captions</b>",
+            "<pre>",
             "category: tv",
             "movies",
+            "</pre>",
         ]
     )
 
@@ -672,6 +867,8 @@ class TorrentBot:
         self.stop_event = threading.Event()
         self.tracked_torrents: dict[str, TrackedTorrent] = {}
         self.tracked_lock = threading.Lock()
+        self.live_status_panels: dict[tuple[int, int], LiveStatusPanel] = {}
+        self.live_status_lock = threading.Lock()
 
     def load_offset(self) -> int | None:
         try:
@@ -687,6 +884,7 @@ class TorrentBot:
 
     def run(self) -> None:
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
+        self.telegram.set_commands()
         self.start_background_threads()
         offset = self.load_offset()
         LOGGER.info("Bot started")
@@ -716,6 +914,8 @@ class TorrentBot:
             ("progress-watch", self.progress_watch_loop),
             ("ratio-alerts", self.ratio_alert_loop),
         ]
+        if self.config.status_live_enabled:
+            threads.append(("status-live", self.status_live_loop))
         if self.config.disk_watch_enabled:
             threads.append(("disk-watch", self.disk_watch_loop))
 
@@ -788,7 +988,7 @@ class TorrentBot:
         command, args = parse_command(text)
 
         if command in {"/start", "/help"}:
-            self.telegram.reply(chat_id, help_text())
+            self.telegram.reply(chat_id, help_text(), parse_mode="HTML")
             return
 
         if command == "/status":
@@ -850,10 +1050,17 @@ class TorrentBot:
             return
 
         now = time.time()
-        lines = [f"Added {len(torrents)} torrent(s){category_text}:"]
         for torrent in torrents:
             torrent_hash = torrent.get("hash")
             name = torrent.get("name") or label
+            footer = (
+                f"category {category or '-'} | refresh "
+                f"{format_eta(self.config.progress_update_interval_seconds)}"
+            )
+            title = f"ADDED // {category or 'default queue'}"
+            text = render_torrent_card(torrent, title=title, footer=footer)
+            sent_message = self.telegram.reply(chat_id, text, parse_mode="HTML")
+            message_id = sent_message.get("message_id") if sent_message else None
             if torrent_hash:
                 with self.tracked_lock:
                     self.tracked_torrents[torrent_hash] = TrackedTorrent(
@@ -862,26 +1069,95 @@ class TorrentBot:
                         name=name,
                         added_at=now,
                         last_sent_at=now,
+                        message_id=message_id,
+                        last_text=text,
                     )
-            lines.append(torrent_line(torrent))
-
-        interval = format_eta(self.config.progress_update_interval_seconds)
-        lines.append(f"I will send progress updates every {interval}.")
-        self.telegram.reply(chat_id, "\n\n".join(lines))
 
     def handle_status(self, chat_id: int) -> None:
         torrents = self.qbit.torrents_info(sort="name")
-        active_torrents = [torrent for torrent in torrents if is_active_torrent(torrent)]
-        if not active_torrents:
-            self.telegram.reply(chat_id, "No active torrents right now.")
+        live_until = None
+        if self.config.status_live_enabled:
+            live_until = time.time() + self.config.status_live_duration_seconds
+        text = render_status_dashboard(torrents, config=self.config, live_until=live_until)
+        sent_message = self.telegram.reply(chat_id, text, parse_mode="HTML")
+        if not sent_message or not self.config.status_live_enabled:
             return
 
-        shown = active_torrents[: self.config.status_limit]
-        lines = [f"Active torrents: {len(active_torrents)}"]
-        lines.extend(torrent_line(torrent) for torrent in shown)
-        if len(active_torrents) > len(shown):
-            lines.append(f"...and {len(active_torrents) - len(shown)} more.")
-        self.telegram.reply(chat_id, "\n\n".join(lines))
+        message_id = sent_message.get("message_id")
+        if not message_id:
+            return
+
+        panel = LiveStatusPanel(
+            chat_id=chat_id,
+            message_id=message_id,
+            created_at=time.time(),
+            last_sent_at=time.time(),
+            last_text=text,
+        )
+        with self.live_status_lock:
+            self.live_status_panels[(chat_id, message_id)] = panel
+
+    def status_live_loop(self) -> None:
+        while not self.stop_event.wait(5):
+            now = time.time()
+            with self.live_status_lock:
+                panels = list(self.live_status_panels.values())
+
+            due_panels = [
+                panel
+                for panel in panels
+                if now - panel.last_sent_at >= self.config.status_refresh_seconds
+            ]
+            if not due_panels:
+                continue
+
+            try:
+                torrents = self.qbit.torrents_info(sort="name")
+            except Exception:
+                LOGGER.exception("Could not refresh live status panels")
+                continue
+
+            for panel in due_panels:
+                live_until = panel.created_at + self.config.status_live_duration_seconds
+                if now >= live_until:
+                    self.finish_live_status_panel(panel)
+                    continue
+
+                text = render_status_dashboard(torrents, config=self.config, live_until=live_until)
+                if text == panel.last_text:
+                    panel.last_sent_at = now
+                    continue
+
+                edited = self.telegram.edit_message(
+                    panel.chat_id,
+                    panel.message_id,
+                    text,
+                    parse_mode="HTML",
+                )
+                if edited:
+                    panel.last_sent_at = now
+                    panel.last_text = text
+                else:
+                    self.remove_live_status_panel(panel)
+
+    def finish_live_status_panel(self, panel: LiveStatusPanel) -> None:
+        footer = "<pre>LIVE WINDOW ENDED. Send /status for a fresh panel.</pre>"
+        if len(panel.last_text) + len(footer) + 2 > 3900:
+            final_text = panel.last_text
+        else:
+            final_text = f"{panel.last_text}\n\n{footer}"
+        if final_text != panel.last_text:
+            self.telegram.edit_message(
+                panel.chat_id,
+                panel.message_id,
+                final_text,
+                parse_mode="HTML",
+            )
+        self.remove_live_status_panel(panel)
+
+    def remove_live_status_panel(self, panel: LiveStatusPanel) -> None:
+        with self.live_status_lock:
+            self.live_status_panels.pop((panel.chat_id, panel.message_id), None)
 
     def handle_control(self, chat_id: int, action: str, query: str) -> None:
         query = query.strip()
@@ -895,8 +1171,14 @@ class TorrentBot:
 
         hashes = [torrent["hash"] for torrent in matches if torrent.get("hash")]
         self.qbit.control_torrents(action, hashes)
-        names = "\n".join(f"- {torrent.get('name') or torrent['hash']}" for torrent in matches)
-        self.telegram.reply(chat_id, f"{action.title()}d {len(matches)} torrent(s):\n{names}")
+        names = "\n".join(
+            f"- {truncate_text(torrent.get('name') or torrent['hash'], 72)}" for torrent in matches
+        )
+        text = (
+            f"<b>{escape_html(action.upper())} // {len(matches)} torrent(s)</b>\n"
+            f"<pre>{escape_html(names)}</pre>"
+        )
+        self.telegram.reply(chat_id, text, parse_mode="HTML")
 
     def find_matches(self, query: str, torrents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if query.lower() == "all":
@@ -941,23 +1223,69 @@ class TorrentBot:
                     continue
 
                 if not torrents:
-                    self.telegram.reply(
-                        item.chat_id,
-                        f"Stopped tracking missing torrent: {item.name}",
+                    self.update_tracked_torrent_message(
+                        item,
+                        (
+                            "<b>TRACKING STOPPED</b>\n"
+                            f"<pre>{escape_html(item.name)} is no longer in qBittorrent.</pre>"
+                        ),
+                        now,
                     )
                     self.untrack_torrent(item.torrent_hash)
                     continue
 
                 torrent = torrents[0]
                 if float(torrent.get("progress") or 0) >= 1:
-                    self.telegram.reply(item.chat_id, f"Completed:\n{torrent_line(torrent)}")
+                    text = render_torrent_card(
+                        torrent,
+                        title="COMPLETE // ready",
+                        footer="progress tracking ended",
+                    )
+                    self.update_tracked_torrent_message(item, text, now, final=True)
                     self.untrack_torrent(item.torrent_hash)
                     continue
 
-                self.telegram.reply(item.chat_id, f"Progress update:\n{torrent_line(torrent)}")
-                with self.tracked_lock:
-                    if item.torrent_hash in self.tracked_torrents:
-                        self.tracked_torrents[item.torrent_hash].last_sent_at = now
+                text = render_torrent_card(
+                    torrent,
+                    title="SYNCING // live progress",
+                    footer=(
+                        "next refresh "
+                        f"{format_eta(self.config.progress_update_interval_seconds)}"
+                    ),
+                )
+                self.update_tracked_torrent_message(item, text, now)
+
+    def update_tracked_torrent_message(
+        self,
+        item: TrackedTorrent,
+        text: str,
+        now: float,
+        *,
+        final: bool = False,
+    ) -> None:
+        if item.last_text == text and not final:
+            with self.tracked_lock:
+                if item.torrent_hash in self.tracked_torrents:
+                    self.tracked_torrents[item.torrent_hash].last_sent_at = now
+            return
+
+        edited = None
+        if item.message_id:
+            edited = self.telegram.edit_message(
+                item.chat_id,
+                item.message_id,
+                text,
+                parse_mode="HTML",
+            )
+        if not edited:
+            sent = self.telegram.reply(item.chat_id, text, parse_mode="HTML")
+            item.message_id = sent.get("message_id") if sent else item.message_id
+
+        with self.tracked_lock:
+            if item.torrent_hash in self.tracked_torrents:
+                self.tracked_torrents[item.torrent_hash].last_sent_at = now
+                self.tracked_torrents[item.torrent_hash].last_text = text
+                self.tracked_torrents[item.torrent_hash].message_id = item.message_id
 
     def untrack_torrent(self, torrent_hash: str) -> None:
         with self.tracked_lock:
@@ -987,9 +1315,14 @@ class TorrentBot:
                 self.telegram.notify_allowed_users(
                     self.config.allowed_user_ids,
                     (
-                        f"Disk alert: {path} is {used_percent:.1f}% full "
-                        f"({format_bytes(usage.free)} free of {format_bytes(usage.total)})."
+                        "<b>DISK WATCH // threshold crossed</b>\n"
+                        "<pre>"
+                        f"PATH {escape_html(path)}\n"
+                        f"USED {used_percent:.1f}% {disk_bar(used_percent)}\n"
+                        f"FREE {format_bytes(usage.free)} / {format_bytes(usage.total)}"
+                        "</pre>"
                     ),
+                    parse_mode="HTML",
                 )
                 alerted.add(threshold)
             elif used_percent < threshold:
@@ -1027,9 +1360,13 @@ class TorrentBot:
                 self.telegram.notify_allowed_users(
                     self.config.allowed_user_ids,
                     (
-                        f"Ratio target reached ({ratio:.2f} >= {target:.2f}):\n"
-                        f"{torrent.get('name') or torrent_hash}"
+                        "<b>RATIO WATCH // target reached</b>\n"
+                        "<pre>"
+                        f"RATIO {ratio:.2f} >= {target:.2f}\n"
+                        f"{escape_html(truncate_text(torrent.get('name') or torrent_hash, 96))}"
+                        "</pre>"
                     ),
+                    parse_mode="HTML",
                 )
                 alerted.add(torrent_hash)
 
