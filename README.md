@@ -16,6 +16,15 @@ It is a small native Python CLI. No Docker required.
 - Pauses/resumes torrents by fuzzy-matched name
 - Sends disk usage alerts at configurable thresholds
 - Sends ratio alerts when torrents hit your target ratio
+- Inline buttons for pause, resume, delete, delete data, recheck, and force start
+- `/search`, `/stats`, `/top`, `/queue`, `/recent`, `/disk`, `/health`, `/logs`, `/backup`
+- Stalled and low-speed torrent alerts
+- Completion actions and per-category ratio targets
+- Freeleech mode and torrent profiles
+- RSS feed watcher with title filters
+- Owner/admin/viewer roles and optional approval flow
+- Optional webhook mode for reverse-proxy HTTPS deployments
+- qBittorrent preference controls for alt speed, speed limits, and queueing
 - Persists Telegram update offset so restarts do not replay old uploads
 - Can run under a user-level systemd service
 
@@ -70,9 +79,21 @@ Commands:
 
 ```text
 /status
+/search breaking bad
+/stats
+/top
+/queue
+/recent
+/disk
+/health
 /pause breaking bad
 /resume breaking bad
 /add tv magnet:?xt=urn:btih:...
+/freeleech on
+/pref alt
+/pref dl 5MiB
+/pref ul 1MiB
+/pref queue on
 ```
 
 `/status` sends a clean live dashboard, then refreshes the same Telegram message for the configured live window.
@@ -90,6 +111,25 @@ tv
 ```
 
 If `CATEGORY_SAVE_PATHS` maps that category, the bot sends the torrent to the matching save path and sets the qBittorrent category.
+
+Inline buttons appear under torrent cards for direct remote control:
+
+```text
+Pause | Resume | Recheck
+Force Start | Delete | Delete + Data
+```
+
+Profiles let short labels carry routing policy:
+
+```env
+TORRENT_PROFILES=tv:category=tv,save_path=/srv/tv,ratio=2.0;movies:category=movies,save_path=/srv/movies,ratio=1.5
+```
+
+RSS watcher format:
+
+```env
+RSS_FEEDS=anime|https://example.com/rss|1080p|anime;movies|https://example.com/movies.xml||movies
+```
 
 ## Run As A User Service
 
@@ -111,6 +151,10 @@ If your host stops user services after logout, enable lingering for your account
 | --- | --- | --- | --- |
 | `TG_BOT_TOKEN` | yes | | Token from BotFather |
 | `TG_ALLOWED_USER_IDS` | yes | | Comma-separated Telegram user IDs |
+| `OWNER_USER_IDS` | no | `TG_ALLOWED_USER_IDS` | Users allowed to approve, view logs, export config |
+| `ADMIN_USER_IDS` | no | `TG_ALLOWED_USER_IDS` | Users allowed to control qBittorrent |
+| `VIEWER_USER_IDS` | no | | Users allowed to view dashboards |
+| `APPROVAL_ENABLED` | no | `false` | Let non-admin submissions wait for owner approval |
 | `QBIT_URL` | yes | | qBittorrent Web UI base URL |
 | `QBIT_USER` | yes | | qBittorrent Web UI username |
 | `QBIT_PASS` | yes | | qBittorrent Web UI password |
@@ -121,6 +165,10 @@ If your host stops user services after logout, enable lingering for your account
 | `QBIT_PAUSED` | no | `false` | Add torrents paused |
 | `CATEGORY_SAVE_PATHS` | no | | Comma-separated mappings like `tv=/srv/tv,movies=/srv/movies` |
 | `CATEGORY_AS_TAG` | no | `false` | Also add the selected category as a qBittorrent tag |
+| `TORRENT_PROFILES` | no | | Label profiles for category, save path, tags, ratio |
+| `PER_CATEGORY_RATIO_TARGETS` | no | | Mappings like `movies=2.0,private=3.0` |
+| `FREELEECH_TAGS` | no | `freeleech` | Extra tags when `/freeleech on` is active |
+| `FREELEECH_CATEGORY` | no | | Optional category override in freeleech mode |
 | `MAX_TORRENT_BYTES` | no | `20971520` | Max accepted Telegram file size |
 | `PROGRESS_UPDATE_INTERVAL_SECONDS` | no | `180` | How often to DM progress for newly added torrents |
 | `PROGRESS_UPDATE_MAX_HOURS` | no | `24` | Stop progress tracking after this many hours |
@@ -136,6 +184,16 @@ If your host stops user services after logout, enable lingering for your account
 | `DISK_WATCH_INTERVAL_SECONDS` | no | `300` | Disk check interval |
 | `RATIO_ALERT_TARGET` | no | `1.0` | DM when a torrent ratio reaches this value; set `0` to disable |
 | `RATIO_ALERT_INTERVAL_SECONDS` | no | `300` | Ratio check interval |
+| `RATIO_ACTION` | no | `notify` | `notify`, `pause`, `delete`, `delete_data`, or `category` |
+| `STALLED_ALERT_ENABLED` | no | `true` | Alert when torrents stop progressing |
+| `STALLED_ALERT_MINUTES` | no | `30` | Stalled threshold |
+| `LOW_SPEED_ALERT_ENABLED` | no | `true` | Alert when active torrents stay below a speed |
+| `LOW_SPEED_THRESHOLD_BYTES` | no | `51200` | Low-speed threshold |
+| `LOW_SPEED_MINUTES` | no | `30` | Low-speed duration threshold |
+| `COMPLETION_ACTION` | no | `notify` | Action when tracked torrents complete |
+| `RSS_FEEDS` | no | | Feed specs: `name|url|filter|category` separated by `;` |
+| `WEBHOOK_ENABLED` | no | `false` | Run webhook server instead of long polling |
+| `WEBHOOK_URL` | no | | Public HTTPS URL for Telegram webhook |
 | `STATE_DIR` | no | `~/.local/state/tg-qbit-bot` | Directory for bot state |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-qbit-bot"
-version = "0.3.0"
+version = "0.4.0"
 description = "Telegram bot that forwards torrent files and magnet links to qBittorrent Web UI."
 readme = "README.md"
 requires-python = ">=3.10"
