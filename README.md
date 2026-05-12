@@ -11,6 +11,11 @@ It is a small native Python CLI. No Docker required.
 - Restricts access to allowed Telegram user IDs
 - Adds torrents through qBittorrent Web API
 - Supports qBittorrent category, tags, save path, and paused mode
+- Sends progress updates after new torrents are added
+- Shows active torrents with `/status`
+- Pauses/resumes torrents by fuzzy-matched name
+- Sends disk usage alerts at configurable thresholds
+- Sends ratio alerts when torrents hit your target ratio
 - Persists Telegram update offset so restarts do not replay old uploads
 - Can run under a user-level systemd service
 
@@ -57,6 +62,33 @@ tg-qbit-bot
 
 Send `/start` to the bot. If your Telegram ID is not allowlisted yet, the bot will reply with the ID to put in `TG_ALLOWED_USER_IDS`.
 
+## Bot Usage
+
+Send a `.torrent` file directly to the bot, or send a magnet link as plain text.
+
+Commands:
+
+```text
+/status
+/pause breaking bad
+/resume breaking bad
+/add tv magnet:?xt=urn:btih:...
+```
+
+For category routing with torrent files, add a Telegram caption:
+
+```text
+category: tv
+```
+
+or simply:
+
+```text
+tv
+```
+
+If `CATEGORY_SAVE_PATHS` maps that category, the bot sends the torrent to the matching save path and sets the qBittorrent category.
+
 ## Run As A User Service
 
 This keeps the bot running in the background without a root-owned service.
@@ -85,9 +117,31 @@ If your host stops user services after logout, enable lingering for your account
 | `QBIT_CATEGORY` | no | | qBittorrent category |
 | `QBIT_TAGS` | no | | Comma-separated qBittorrent tags |
 | `QBIT_PAUSED` | no | `false` | Add torrents paused |
+| `CATEGORY_SAVE_PATHS` | no | | Comma-separated mappings like `tv=/srv/tv,movies=/srv/movies` |
+| `CATEGORY_AS_TAG` | no | `false` | Also add the selected category as a qBittorrent tag |
 | `MAX_TORRENT_BYTES` | no | `20971520` | Max accepted Telegram file size |
+| `PROGRESS_UPDATE_INTERVAL_SECONDS` | no | `180` | How often to DM progress for newly added torrents |
+| `PROGRESS_UPDATE_MAX_HOURS` | no | `24` | Stop progress tracking after this many hours |
+| `STATUS_LIMIT` | no | `15` | Max torrents shown by `/status` |
+| `FUZZY_MATCH_MIN_SCORE` | no | `0.35` | Minimum name-match score for `/pause` and `/resume` |
+| `FUZZY_MATCH_LIMIT` | no | `5` | Max fuzzy matches to pause/resume |
+| `DISK_WATCH_ENABLED` | no | `true` | Enable disk space alerts |
+| `DISK_WATCH_PATH` | no | `QBIT_SAVE_PATH` or `/` | Path to check for disk usage |
+| `DISK_WATCH_THRESHOLDS` | no | `80,90,95` | Percent thresholds that trigger DMs |
+| `DISK_WATCH_INTERVAL_SECONDS` | no | `300` | Disk check interval |
+| `RATIO_ALERT_TARGET` | no | `1.0` | DM when a torrent ratio reaches this value; set `0` to disable |
+| `RATIO_ALERT_INTERVAL_SECONDS` | no | `300` | Ratio check interval |
 | `STATE_DIR` | no | `~/.local/state/tg-qbit-bot` | Directory for bot state |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
+
+## Updating On A VPS
+
+```bash
+cd ~/tg-qbit-bot
+git pull
+~/.local/share/tg-qbit-bot/venv/bin/pip install .
+systemctl --user restart tg-qbit-bot
+```
 
 ## Local Development
 
